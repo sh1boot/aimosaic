@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from collections import deque
+import argparse
 import datetime
 import os
 import pathlib
@@ -8,26 +8,43 @@ import replicate
 from PIL import Image
 import imagestuff
 
-NOP = False
+_NOP = False
 
-SWATCH = 512, 512
-CANVAS = 768, 768
-STEP = 256, 256
-PROMPT_STRENGTH = 0.7
-GUIDANCE_SCALE = 7.5
-STEPS = 50
+_SWATCH = 512, 512
+_PROMPT_STRENGTH = 0.7
+_GUIDANCE_SCALE = 7.5
+_STEPS = 25
+_NOISE = 0.05
 
-canvas = Image.new("RGBA", CANVAS)
+_CANVAS = None
 
 stamp = datetime.datetime.now().isoformat('T', 'seconds').replace(':', '')
+
+def tup_add(a, b): return tuple(x + y for x, y in zip(a, b))
+def tup_sub(a, b): return tuple(x - y for x, y in zip(a, b))
+def tup_mul(a, b): return tuple(x * y for x, y in zip(a, b))
+def tup_div(a, b): return tuple(x / y if x > 0 else 0 for x, y in zip(a, b))
+def tup_idiv(a, b): return tuple(x // y if x > 0 else 0 for x, y in zip(a, b))
+def tup_ceil(a): return tuple(round(x + 0.5) for x in a)
+def tup_within(a, lo, hi): return tuple((l <= x and x < h) for x, l, h in zip(a, lo, hi))
 
 def mkfilename(suffix):
   return pathlib.Path(f'img_{stamp}_{suffix}.png')
 
-def add_image(image, position):
-  if image: canvas.paste(image, position)
+def add_image(image, position=None):
+  if image:
+    if position is None:
+      position = (random.randrange(_CANVAS.size[0] - image.size[0] + 1),
+                  random.randrange(_CANVAS.size[1] - image.size[1] + 1))
+    # TODO: check overlapping background, and normalise the colours of the
+    # incoming image to match what's being replaced.
+    _CANVAS.paste(image, position)
 
-def predict(prompt, start, alpha):
+def get_image(position):
+  box = (*position, *tup_add(position, _SWATCH))
+  return _CANVAS.crop(box=box)
+
+def predict(prompt, start=None, alpha=None):
   if start:
     startpath = mkfilename('start')
     start.save(startpath, 'PNG')
@@ -49,27 +66,29 @@ def predict(prompt, start, alpha):
       if start and alpha:
         results = model.predict(
             prompt=try_prompt,
-            width=SWATCH[0],
-            height=SWATCH[1],
+            width=_SWATCH[0],
+            height=_SWATCH[1],
             init_image=startpath,
             mask=alphapath,
-            prompt_strength=PROMPT_STRENGTH,
+            prompt_strength=_PROMPT_STRENGTH,
             num_outputs=1,
-            num_inference_steps=STEPS,
-            guidance_scale=GUIDANCE_SCALE,
+            num_inference_steps=_STEPS,
+            guidance_scale=_GUIDANCE_SCALE,
             seed=None
         )
         os.remove(startpath)
         os.remove(alphapath)
+        imagestuff.log(start)
+        imagestuff.log(alpha)
       else:
         results = model.predict(
             prompt=try_prompt,
-            width=SWATCH[0],
-            height=SWATCH[1],
-            prompt_strength=PROMPT_STRENGTH,
+            width=_SWATCH[0],
+            height=_SWATCH[1],
+            prompt_strength=_PROMPT_STRENGTH,
             num_outputs=1,
-            num_inference_steps=STEPS,
-            guidance_scale=GUIDANCE_SCALE,
+            num_inference_steps=_STEPS,
+            guidance_scale=_GUIDANCE_SCALE,
             seed=None
         )
       break
@@ -80,14 +99,14 @@ def predict(prompt, start, alpha):
         raise
   else:
     raise RuntimeError('retries exceeded trying to escape NSFW loop')
-  return [ imagestuff.download(url) for url in results ]
+  results = [ imagestuff.download(url) for url in results ]
+  for image in results:
+    imagestuff.log(image)
+  return results
 
 
-def request_image(position, prompt):
-  box = (*position, position[0] + SWATCH[0], position[1] + SWATCH[1])
-
-  imagestuff.reset_log()
-  start = canvas.crop(box=box)
+def update_canvas(position, prompt):
+  start = get_image(position)
 
   # fully-transparent gives entropy=2.0?
   entropy = start.convert('L').entropy()
@@ -96,60 +115,136 @@ def request_image(position, prompt):
     start = None
     alpha = None
   else:
-    start = imagestuff.outpaint(start)
-    imagestuff.log(start)
+    start = imagestuff.outpaint(start, extra_noise=_NOISE)
     alpha = start.getchannel("A").convert(mode="L")
-    imagestuff.log(alpha)
     start.putalpha(255)
     start = start.convert('RGB')
 
-  if NOP:
+  if _NOP:
     result = start.copy() if start else None
   else:
     images = predict(prompt, start, alpha)
-    for image in images:
-      imagestuff.log(image)
     result = images[0]
 
   add_image(result, position)
 
-  imagestuff.save_log(mkfilename(position))
 
+def outpaint(start_image, prompt_gen, coord_gen):
+  if start_image: add_image(start_image, next(coord_gen))
 
-def outpaint(image, prompt_gen, coords, prompt_len=1):
-  window = deque(maxlen=prompt_len)
-  while len(window) < window.maxlen:
-    window.append(next(prompt_gen).strip())
-
-  if image: add_image(image, next(coords))
-  for coord in coords:
+  for position in coord_gen:
+    imagestuff.reset_log()
     while True:
-      window.append(next(prompt_gen).strip())
-      prompt = ' '.join(window)
-      print(f'{coord[0]},{coord[1]} prompt: {prompt}')
+      prompt = next(prompt_gen)
+      print(f'{position} prompt: {prompt}')
       try:
-        request_image(coord, prompt)
+        update_canvas(position, prompt)
         break
       except RuntimeError:
-        print('rotating prompt to try again')
+        print('dropping prompt to try again')
 
-    canvas.save(mkfilename('result'), 'PNG')
+    imagestuff.save_log(mkfilename(position))
+    _CANVAS.save(mkfilename('result'), 'PNG')
 
-def coord_gen(step):
-  subdiv_x = (CANVAS[0] - SWATCH[0]) // step[0]
-  subdiv_y = (CANVAS[1] - SWATCH[1]) // step[1]
-  print('subdiv:', subdiv_x, subdiv_y)
-  step = ((CANVAS[0] - SWATCH[0]) // subdiv_x, (CANVAS[1] - SWATCH[1]) // subdiv_y)
-  print('step:', step)
+
+def random_coords(area, step, swatch):
+  subdiv = tup_ceil(tup_div(tup_sub(area, swatch), step))
+  step = tup_idiv(tup_sub(area, swatch), subdiv)
+
   results = []
-  for x_pos in range(subdiv_x + 1):
-    for y_pos in range(subdiv_y + 1):
-      tup = (x_pos * step[0], y_pos * step[1])
+  for x_pos in range(subdiv[0] + 1):
+    for y_pos in range(subdiv[1] + 1):
+      tup = tup_mul((x_pos, y_pos), step)
       results.append(tup)
   random.shuffle(results)
   yield from results
 
-with open('sometext.txt', 'rt', encoding='utf-8') as file:
-  # for i in range(random.randrange(30)): next(file)
-  outpaint(None, file, coord_gen(STEP))
-  canvas.show()
+
+def spiral_coords(area, step, swatch):
+  subdiv = tup_ceil(tup_div(tup_sub(area, swatch), step))
+  step = tup_idiv(tup_sub(area, swatch), subdiv)
+
+  centre = tup_idiv(subdiv, (2, 2))
+  ncentre = tup_sub(subdiv, centre)
+
+  def result(x, y):
+    result = tup_add(centre, (x, y))
+    if all(tup_within(result, (0, 0), tup_add(subdiv, (1, 1)))):
+      yield tup_mul(result, step)
+
+  print(subdiv, step, centre, ncentre)
+  yield from result(0, 0)
+  for r in range(1, max(ncentre[0], ncentre[1]) + 1):
+    for x in range(-r + 1, r):
+      yield from result(x, -r)
+    for y in range(-r, r):
+      yield from result(r, y)
+    for x in range(r, -r, -1):
+      yield from result(x, r)
+    for y in range(r, -r, -1):
+      yield from result(-r, y)
+    yield from result(-r, -r)
+
+
+def slow_iter(source, rate):
+  for output in iter(source):
+    yield output
+    while random.randrange(rate) > 0:
+      yield output
+
+
+def main(opt):
+  prompts = opt.prompts.readlines()
+  prompts = [ prompt.strip() for prompt in prompts ]
+  random.shuffle(prompts)
+  start_image = None
+  if opt.start_image:
+    if opt.start_image.startswith('http'):
+      start_image = imagestuff.download(opt.start_image)
+    else:
+      start_image = Image.open(opt.start_image)
+  outpaint(
+      start_image,
+      slow_iter(prompts, opt.prompt_change_rate),
+      #random_coords(opt.canvas, opt.step, opt.swatch)
+      spiral_coords(opt.canvas, opt.step, opt.swatch)
+  )
+  _CANVAS.show()
+
+
+def xy_pair(arg):
+  try:
+    x, y = arg.split(',')
+    return int(x), int(y)
+  except ValueError as exc:
+    raise argparse.ArgumentTypeError(f'not an int pair: "{arg}"') from exc
+
+if __name__ == '__main__':
+  parser = argparse.ArgumentParser()
+  parser.add_argument('--canvas', type=xy_pair, default=(800,800))
+  parser.add_argument('--step', type=xy_pair, default=(288,288))
+  parser.add_argument('--swatch', type=xy_pair, default=_SWATCH)
+  parser.add_argument('--start_image', type=str, default=None)
+  parser.add_argument('--prompts',
+                      type=argparse.FileType('r', encoding='utf-8'),
+                      default='prompts.txt')
+  parser.add_argument('--prompt_change_rate', type=int, default=1)
+
+  parser.add_argument('--prompt_strength', type=float, default=_PROMPT_STRENGTH)
+  parser.add_argument('--guidance_scale', type=float, default=_GUIDANCE_SCALE)
+  parser.add_argument('--steps', type=int, default=_STEPS)
+
+  parser.add_argument('--noise', type=float, default=_NOISE)
+  parser.add_argument('--nop', action='store_true', default=_NOP)
+  _opt = parser.parse_args()
+
+  # TODO: no globals
+  _CANVAS = Image.new("RGBA", _opt.canvas)
+  _SWATCH = _opt.swatch
+  _PROMPT_STRENGTH = _opt.prompt_strength
+  _GUIDANCE_SCALE = _opt.guidance_scale
+  _STEPS = _opt.steps
+  _NOP = _opt.nop
+  _NOISE = _opt.noise
+
+  main(_opt)

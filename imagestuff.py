@@ -56,6 +56,7 @@ def match_histogram(image, histogram):
 
 
 def area_of_interest(src):
+  # TODO: compensate for transparent regions saturating the result
   grey = src.convert("L")
   greyblur = grey.filter(ImageFilter.GaussianBlur(8))
   grey = ImageChops.difference(grey, greyblur)
@@ -67,21 +68,22 @@ def area_of_interest(src):
   return greyblur
 
 
-def outpaint(src, cutout_radius=24, gradient_radius=64):
+def outpaint(src, cutout_radius=24, gradient_radius=64, extra_noise=0.03, roi_pinch=(0.3,0.5)):
   aoi = area_of_interest(src)
   alpha = src.getchannel("A").convert(mode="L")
   alpha1 = alpha.filter(ImageFilter.GaussianBlur(gradient_radius))
   alpha2 = alpha.filter(ImageFilter.GaussianBlur(cutout_radius))
   fuzzyalpha = Image.merge("RGBA", (aoi, alpha1, alpha2, alpha))
+  log(src)
   log(aoi)
-  log(alpha)
 
   with open('outpainter.frag', 'rt', encoding='utf-8') as file:
     shader = file.read()
   args = {
       'random': (random.random(), random.random(), random.random(), random.random()),
       'alphapinch': (0.7, 0.8),
-      'extra_noise': 0.1,
+      'roipinch': roi_pinch,
+      'extra_noise': extra_noise,
       'image_texture': src,
       'alpha_texture': fuzzyalpha,
   }

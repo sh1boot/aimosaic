@@ -14,6 +14,7 @@ out vec4 output_colour;
 
 uniform vec4 random;
 uniform vec2 alphapinch;
+uniform vec2 roipinch;
 uniform float extra_noise;
 uniform sampler2D image_texture;
 uniform sampler2D alpha_texture;
@@ -27,9 +28,6 @@ mat2x2 rotmat(float a)
 }
 
 float hash(vec2 uv) {
-    // Seeing some weird discontinuity coming from overflow cases -- this'll fix it!
-    uv = vec2(ivec2(floatBitsToUint(uv.x), floatBitsToUint(uv.y))) / 65537.0;
-
     const vec2 swiz = vec2(12.9898, 78.233);
     return fract(sin(dot(uv, swiz)) * 43758.5453);
 }
@@ -65,17 +63,30 @@ float ActualCutout(vec2 uv) {
 
 float BoringCutout(vec2 uv) {
     float boring = texture(alpha_texture, uv).r;
-    return smoothstep(0.5, 0.8, boring);
+    return smoothstep(roipinch.x, roipinch.y, boring);
 }
 
 float ErodedCutout(vec2 uv)
 {
     float alpha = textureLod(alpha_texture, uv, 1.5).b;
+    alpha = clamp(3.0 * alpha - 2.0, 0.0, 1.0);
 
-    //alpha *= BoringCutout(uv);
+    alpha *= BoringCutout(uv);
+
     // This is just to make certain we get 0 in untouchable space:
     alpha *= ActualCutout(uv);
-    return clamp(3.0 * alpha - 2.0, 0.0, 1.0);
+    return alpha;
+}
+
+float AccretedCutout(vec2 uv)
+{
+    float alpha = textureLod(alpha_texture, uv, 1.5).b;
+    alpha = smoothstep(0.0, 1.0, 3.0 * alpha);
+
+    // This is just to make certain we get 0 in untouchable space:
+    alpha *= ActualCutout(uv);
+
+    return alpha;
 }
 
 vec4 GetImage(vec2 uv) {
@@ -155,7 +166,7 @@ void main(void)
     vec4 col = vec4(0.5 + 0.5*cos(iTime+uv.xyx+vec3(0,2,4)), 1.0);
 
     vec4 tex = GetImage(uv);
-#if 1
+
     for (int i = 0; i < MAX_WARP_ITERATIONS; ++i) {
         if (tex.a >= 0.99) break;
         vec4 back = GetWarpBackfill(uv, float(i) * 1.618033989);
@@ -166,22 +177,20 @@ void main(void)
         vec4 back = GetPatchBackfill(uv, float(i) * 1.618033989);
         tex = tex + back * (1.0 - tex.a);
     }
-    float alpha = ActualCutout(uv);
     col = tex + col * (1.0 - tex.a);
+
+    float alpha = ActualCutout(uv);
     vec4 cut = CUT_HIGHLIGHT * (1.0 - alpha);
     col = cut + col * (1.0 - cut.a);
-#else
-    col = tex / tex.a;
+#if 0
+    alpha = BoringCutout(uv);
+    col = mix(col, vec4(1.0, 0.0, 1.0, 1.0), alpha);
 #endif
 
-    float a = ErodedCutout(uv);
+    vec4 noise = hash4(random.wz + uv.xy) * 2.0 - 1.0;
+    col.rgb = col.rgb + noise.rgb * extra_noise * (1.0 - AccretedCutout(uv));
 
-    col.rgb = col.rgb + (hash4(uv).rgb - 0.5) * 2.0 * extra_noise * (1.0 - a);
-    float b = BoringCutout(uv);
-    a *= b;
-    a = smoothstep(alphapinch.x, alphapinch.y, a);
-
-//    col = mix(col, vec4(1.0, 0.0, 1.0, 1.0), b);
-
-    output_colour = vec4(col.rgb, a);
+    alpha = ErodedCutout(uv);
+    alpha = smoothstep(alphapinch.x, alphapinch.y, alpha);
+    output_colour = vec4(col.rgb, alpha);
 }
