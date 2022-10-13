@@ -1,9 +1,57 @@
 import io
+import math
 import random
 import requests
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
 
 import glstuff
+
+
+class Point(tuple):
+  def __new__(cls, x, y=None):
+    if y is None:
+      if isinstance(x, tuple):
+        return super().__new__(cls, x)
+      return super().__new__(cls, (x, x))
+    return super().__new__(cls, (x, y))
+
+  @property
+  def x(self):
+    return self[0]
+  @property
+  def y(self):
+    return self[1]
+
+  @classmethod
+  def xymap(cls, function, *args):
+    return cls(
+        function(*(a.x if isinstance(a, cls) else a for a in args)),
+        function(*(a.y if isinstance(a, cls) else a for a in args))
+    )
+
+  def _op(self, b, f): return type(self).xymap(f, self, type(self)(b))
+  def __add__(self, b): return self._op(b, lambda x, y: x + y)
+  def __sub__(self, b): return self._op(b, lambda x, y: x - y)
+  def __mul__(self, b): return self._op(b, lambda x, y: x * y)
+  def __truediv__(self, b): return self._op(b, lambda x, y: x / y if x else 0)
+  def __floordiv__(self, b): return self._op(b, lambda x, y: x // y if x else 0)
+  def __and__(self, b): return self._op(b, lambda x, y: x & y)
+  def __or__(self, b): return self._op(b, lambda x, y: x | y)
+  def __lt__(self, b): return self._op(b, lambda x, y: x < y)
+  def __le__(self, b): return self._op(b, lambda x, y: x <= y)
+  def __gt__(self, b): return self._op(b, lambda x, y: x > y)
+  def __ge__(self, b): return self._op(b, lambda x, y: x >= y)
+  def __eq__(self, b): return self._op(b, lambda x, y: x == y)
+  def __ne__(self, b): return self._op(b, lambda x, y: x != y)
+  def __bool__(self): raise TypeError(f'use any() or all() to cast {type(self)} to bool')
+  def ceil(self): return type(self)(*(math.ceil(z) for z in self))
+  def floor(self): return type(self)(*(math.floor(z) for z in self))
+
+class Size(Point):
+  @property
+  def width(self): return self[0]
+  @property
+  def height(self): return self[1]
 
 _DEBUG_LOG = []
 
@@ -39,19 +87,20 @@ def match_histogram(image, histogram):
   wrong_hist = image.histogram()
 
   lut = []
-  for p in range(0, len(wrong_hist), 256):
-    scale = sum(histogram[p:p+256]) / sum(wrong_hist[p:p+256])
-    s = 0
+  for plane in range(0, len(wrong_hist), 256):
+    scale = (sum(histogram[plane:plane+256]) /
+             sum(wrong_hist[plane:plane+256]))
+    accum = 0
     i = 0
-    i0 = 0
+    i_start = 0
     for o in range(256):
-      s += wrong_hist[p + o] * scale
-      if s > 0:
-        i0 = i
-        while s > 0:
-          s -= histogram[p + i]
+      accum += wrong_hist[plane + o] * scale
+      if accum > 0:
+        i_start = i
+        while accum > 0:
+          accum -= histogram[plane + i]
           i += 1
-      lut.append((i + i0) // 2)
+      lut.append((i + i_start) // 2)
   return image.point(lut)
 
 
@@ -61,7 +110,7 @@ def area_of_interest(src):
   greyblur = grey.filter(ImageFilter.GaussianBlur(8))
   grey = ImageChops.difference(grey, greyblur)
   grey = ImageOps.equalize(grey)
-  box = (0, 0, grey.size[0] - 1, grey.size[1] - 1)
+  box = (*(0, 0), *(Size(grey.size) - 1))
   ImageDraw.Draw(grey).rectangle(box, outline=255, width=1)
   greyblur = grey.filter(ImageFilter.GaussianBlur(64))
   greyblur = ImageOps.equalize(greyblur)

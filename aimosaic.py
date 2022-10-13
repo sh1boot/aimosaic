@@ -8,9 +8,11 @@ import replicate
 from PIL import Image
 import imagestuff
 
+from imagestuff import Point, Size
+
 _NOP = False
 
-_SWATCH = 512, 512
+_SWATCH = Size(512, 512)
 _PROMPT_STRENGTH = 0.7
 _GUIDANCE_SCALE = 7.5
 _STEPS = 25
@@ -18,30 +20,23 @@ _NOISE = 0.05
 
 _CANVAS = None
 
-stamp = datetime.datetime.now().isoformat('T', 'seconds').replace(':', '')
-
-def tup_add(a, b): return tuple(x + y for x, y in zip(a, b))
-def tup_sub(a, b): return tuple(x - y for x, y in zip(a, b))
-def tup_mul(a, b): return tuple(x * y for x, y in zip(a, b))
-def tup_div(a, b): return tuple(x / y if x > 0 else 0 for x, y in zip(a, b))
-def tup_idiv(a, b): return tuple(x // y if x > 0 else 0 for x, y in zip(a, b))
-def tup_ceil(a): return tuple(round(x + 0.5) for x in a)
-def tup_within(a, lo, hi): return tuple((l <= x and x < h) for x, l, h in zip(a, lo, hi))
+_STAMP = datetime.datetime.now().isoformat('T', 'seconds').replace(':', '')
 
 def mkfilename(suffix):
-  return pathlib.Path(f'img_{stamp}_{suffix}.png')
+  return pathlib.Path(f'outpaint_{_STAMP}_{suffix}.png')
 
 def add_image(image, position=None):
-  if image:
-    if position is None:
-      position = (random.randrange(_CANVAS.size[0] - image.size[0] + 1),
-                  random.randrange(_CANVAS.size[1] - image.size[1] + 1))
-    # TODO: check overlapping background, and normalise the colours of the
-    # incoming image to match what's being replaced.
-    _CANVAS.paste(image, position)
+  if position is None:
+    ofs_range = Size(_CANVAS.size) - Size(image.size) + Size(1)
+    position = Point.xymap(random.randrange, ofs_range)
+  # TODO: check overlapping background, and normalise the colours of the
+  # incoming image to match what's being replaced.
+  # TODO: why can't I pass `position` directly?
+  tup = tuple(position)
+  _CANVAS.paste(image, tup)
 
 def get_image(position):
-  box = (*position, *tup_add(position, _SWATCH))
+  box = (*position, *(position + _SWATCH))
   return _CANVAS.crop(box=box)
 
 def predict(prompt, start=None, alpha=None):
@@ -106,7 +101,8 @@ def predict(prompt, start=None, alpha=None):
 
 
 def update_canvas(position, prompt):
-  start = get_image(position)
+  original = get_image(position)
+  start = original
 
   # fully-transparent gives entropy=2.0?
   entropy = start.convert('L').entropy()
@@ -121,7 +117,7 @@ def update_canvas(position, prompt):
     start = start.convert('RGB')
 
   if _NOP:
-    result = start.copy() if start else None
+    result = original
   else:
     images = predict(prompt, start, alpha)
     result = images[0]
@@ -129,7 +125,7 @@ def update_canvas(position, prompt):
   add_image(result, position)
 
 
-def outpaint(start_image, prompt_gen, coord_gen):
+def outpaint(start_image, prompt_gen, coord_gen, save_progress=False):
   if start_image: add_image(start_image, next(coord_gen))
 
   for position in coord_gen:
@@ -143,38 +139,38 @@ def outpaint(start_image, prompt_gen, coord_gen):
       except RuntimeError:
         print('dropping prompt to try again')
 
-    imagestuff.save_log(mkfilename(position))
+    if save_progress:
+      imagestuff.save_log(mkfilename(position))
     _CANVAS.save(mkfilename('result'), 'PNG')
 
 
 def random_coords(area, step, swatch):
-  subdiv = tup_ceil(tup_div(tup_sub(area, swatch), step))
-  step = tup_idiv(tup_sub(area, swatch), subdiv)
+  subdiv = ((area - swatch) / step).ceil()
+  step = (area - swatch) // subdiv
 
   results = []
   for x_pos in range(subdiv[0] + 1):
     for y_pos in range(subdiv[1] + 1):
-      tup = tup_mul((x_pos, y_pos), step)
-      results.append(tup)
+      point = Point(x_pos, y_pos) * step
+      results.append(point)
   random.shuffle(results)
   yield from results
 
 
 def spiral_coords(area, step, swatch):
-  subdiv = tup_ceil(tup_div(tup_sub(area, swatch), step))
-  step = tup_idiv(tup_sub(area, swatch), subdiv)
+  subdiv = ((area - swatch) / step).ceil()
+  step = (area - swatch) // subdiv
 
-  centre = tup_idiv(subdiv, (2, 2))
-  ncentre = tup_sub(subdiv, centre)
+  centre = subdiv // 2
+  ncentre = subdiv - centre
 
   def result(x, y):
-    result = tup_add(centre, (x, y))
-    if all(tup_within(result, (0, 0), tup_add(subdiv, (1, 1)))):
-      yield tup_mul(result, step)
+    offset = centre + Point(x, y)
+    if all(Point(0) <= offset) and all(offset <= subdiv):
+      yield offset * step
 
-  print(subdiv, step, centre, ncentre)
   yield from result(0, 0)
-  for r in range(1, max(ncentre[0], ncentre[1]) + 1):
+  for r in range(1, max(ncentre) + 1):
     for x in range(-r + 1, r):
       yield from result(x, -r)
     for y in range(-r, r):
@@ -205,9 +201,10 @@ def main(opt):
       start_image = Image.open(opt.start_image)
   outpaint(
       start_image,
-      slow_iter(prompts, opt.prompt_change_rate),
-      #random_coords(opt.canvas, opt.step, opt.swatch)
-      spiral_coords(opt.canvas, opt.step, opt.swatch)
+      prompt_gen=slow_iter(prompts, opt.prompt_change_rate),
+      #coord_gen=random_coords(opt.canvas, opt.step, opt.swatch),
+      coord_gen=spiral_coords(opt.canvas, opt.step, opt.swatch),
+      save_progress=(opt.save_progress and not opt.nop)
   )
   _CANVAS.show()
 
@@ -215,15 +212,23 @@ def main(opt):
 def xy_pair(arg):
   try:
     x, y = arg.split(',')
-    return int(x), int(y)
+    return Point(int(x), int(y))
   except ValueError as exc:
     raise argparse.ArgumentTypeError(f'not an int pair: "{arg}"') from exc
 
+def wh_pair(arg):
+  try:
+    x, y = arg.split('x')
+    return Size(int(x), int(y))
+  except ValueError:
+    pass
+  return Size(xy_pair(arg))
+
 if __name__ == '__main__':
   parser = argparse.ArgumentParser()
-  parser.add_argument('--canvas', type=xy_pair, default=(800,800))
-  parser.add_argument('--step', type=xy_pair, default=(288,288))
-  parser.add_argument('--swatch', type=xy_pair, default=_SWATCH)
+  parser.add_argument('--canvas', type=wh_pair, default=Size(800,800))
+  parser.add_argument('--step', type=wh_pair, default=Size(288,288))
+  parser.add_argument('--swatch', type=wh_pair, default=_SWATCH)
   parser.add_argument('--start_image', type=str, default=None)
   parser.add_argument('--prompts',
                       type=argparse.FileType('r', encoding='utf-8'),
@@ -236,6 +241,7 @@ if __name__ == '__main__':
 
   parser.add_argument('--noise', type=float, default=_NOISE)
   parser.add_argument('--nop', action='store_true', default=_NOP)
+  parser.add_argument('--save_progress', action='store_true', default=False)
   _opt = parser.parse_args()
 
   # TODO: no globals
