@@ -3,6 +3,7 @@ import argparse
 import datetime
 import os
 import pathlib
+import pydantic
 import random
 import replicate
 from PIL import Image
@@ -21,6 +22,8 @@ _NOISE = 0.05
 _CANVAS = None
 
 _STAMP = datetime.datetime.now().isoformat('T', 'seconds').replace(':', '')
+
+_PATCH = None
 
 def mkfilename(suffix):
   return pathlib.Path(f'outpaint_{_STAMP}_{suffix}.png')
@@ -92,6 +95,9 @@ def predict(prompt, start=None, alpha=None):
         print(f'prompt "{try_prompt[:16]}..{try_prompt[-16:]}" NSFW error, retry: {retries}')
       else:
         raise
+    except pydantic.ValidationError:
+      print('pydantic is doing that thing again.')
+
   else:
     raise RuntimeError('retries exceeded trying to escape NSFW loop')
   results = [ imagestuff.download(url) for url in results ]
@@ -101,6 +107,7 @@ def predict(prompt, start=None, alpha=None):
 
 
 def update_canvas(position, prompt):
+  global _PATCH
   original = get_image(position)
   start = original
 
@@ -111,7 +118,7 @@ def update_canvas(position, prompt):
     start = None
     alpha = None
   else:
-    start = imagestuff.outpaint(start, extra_noise=_NOISE)
+    start = imagestuff.outpaint(start, extra_noise=_NOISE, patch=_PATCH)
     alpha = start.getchannel("A").convert(mode="L")
     start.putalpha(255)
     start = start.convert('RGB')
@@ -121,17 +128,18 @@ def update_canvas(position, prompt):
   else:
     images = predict(prompt, start, alpha)
     result = images[0]
-
+  if _PATCH is None: _PATCH = result
   add_image(result, position)
 
 
-def outpaint(start_image, prompt_gen, coord_gen, save_progress=False):
+def outpaint(start_image, prompt_gen, coord_gen,
+             save_progress=False, prefix=None, suffix=None):
   if start_image: add_image(start_image, next(coord_gen))
-
   for position in coord_gen:
     imagestuff.reset_log()
     while True:
-      prompt = next(prompt_gen)
+      varying_prompt = next(prompt_gen)
+      prompt = " ".join([p for p in [prefix, varying_prompt, suffix] if p])
       print(f'{position} prompt: {prompt}')
       try:
         update_canvas(position, prompt)
@@ -204,6 +212,8 @@ def main(opt):
       prompt_gen=slow_iter(prompts, opt.prompt_change_rate),
       #coord_gen=random_coords(opt.canvas, opt.step, opt.swatch),
       coord_gen=spiral_coords(opt.canvas, opt.step, opt.swatch),
+      prefix=opt.prompt_prefix,
+      suffix=opt.prompt_suffix,
       save_progress=(opt.save_progress and not opt.nop)
   )
   _CANVAS.show()
@@ -233,6 +243,8 @@ if __name__ == '__main__':
   parser.add_argument('--prompts',
                       type=argparse.FileType('r', encoding='utf-8'),
                       default='prompts.txt')
+  parser.add_argument('--prompt_prefix', type=str, default=None)
+  parser.add_argument('--prompt_suffix', type=str, default=None)
   parser.add_argument('--prompt_change_rate', type=int, default=1)
 
   parser.add_argument('--prompt_strength', type=float, default=_PROMPT_STRENGTH)

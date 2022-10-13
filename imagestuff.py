@@ -107,17 +107,24 @@ def match_histogram(image, histogram):
 def area_of_interest(src):
   # TODO: compensate for transparent regions saturating the result
   grey = src.convert("L")
+  alpha = src.getchannel("A").convert(mode="L")
+  grey = ImageChops.multiply(grey, alpha)
   greyblur = grey.filter(ImageFilter.GaussianBlur(8))
   grey = ImageChops.difference(grey, greyblur)
   grey = ImageOps.equalize(grey)
   box = (*(0, 0), *(Size(grey.size) - 1))
   ImageDraw.Draw(grey).rectangle(box, outline=255, width=1)
+  grey = ImageChops.multiply(grey, alpha)
   greyblur = grey.filter(ImageFilter.GaussianBlur(64))
   greyblur = ImageOps.equalize(greyblur)
+
+  # TODO: consider shaping the histogram of the result to transition at some
+  # percentage up the alpha histogram, or maybe try using Image.getbbox() or
+  # Image.getextrema()
   return greyblur
 
 
-def outpaint(src, cutout_radius=24, gradient_radius=64, extra_noise=0.03, roi_pinch=(0.3,0.5)):
+def outpaint(src, patch=None, cutout_radius=24, gradient_radius=64, extra_noise=0.03, roi_pinch=(0.3,0.5)):
   aoi = area_of_interest(src)
   alpha = src.getchannel("A").convert(mode="L")
   alpha1 = alpha.filter(ImageFilter.GaussianBlur(gradient_radius))
@@ -134,6 +141,7 @@ def outpaint(src, cutout_radius=24, gradient_radius=64, extra_noise=0.03, roi_pi
       'roipinch': roi_pinch,
       'extra_noise': extra_noise,
       'image_texture': src,
+      'patch_texture': patch if patch else src,
       'alpha_texture': fuzzyalpha,
   }
   return glstuff.shade_it(src.size, shader=shader, shader_args=args)

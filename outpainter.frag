@@ -17,6 +17,7 @@ uniform vec2 alphapinch;
 uniform vec2 roipinch;
 uniform float extra_noise;
 uniform sampler2D image_texture;
+uniform sampler2D patch_texture;
 uniform sampler2D alpha_texture;
 
 /////////////
@@ -93,6 +94,10 @@ vec4 GetImage(vec2 uv) {
     return textureLod(image_texture, uv, 0.0) * ErodedCutout(uv);
 }
 
+vec4 GetPatch(vec2 uv) {
+    return textureLod(patch_texture, uv, 0.0);
+}
+
 float AlphaForGradient(vec2 uv) {
     // Fun effect: low LOD here lets noise bleed through from the
     // random sampling used in the blur generation.
@@ -109,11 +114,11 @@ vec2 AlphaGradient(vec2 uv, float eps) {
     return vec2(rt - lf, dn - up) / eps;
 }
 
-vec4 GetBackfill(vec2 uv, float fade, vec4 highlight) {
+vec4 GetBackfill(vec2 uv, float fade, vec4 highlight, bool use_patch) {
     vec2 edges = smoothstep(0.0, 0.02, uv)
                * smoothstep(0.0, 0.02, 1.0-uv);
     float edge = edges.x * edges.y;
-    vec4 colour = GetImage(uv) * edge * fade;
+    vec4 colour = (use_patch ? GetPatch(uv) : GetImage(uv)) * edge * fade;
 
     if (colour.a >= 0.1) {
         colour = highlight + colour * (1.0 - highlight.a);
@@ -141,7 +146,7 @@ vec4 GetWarpBackfill(vec2 uv, float gen) {
 #endif
     uv += normalize(g) * len;
 
-    return GetBackfill(uv, alpha, WARP_HIGHLIGHT);
+    return GetBackfill(uv, alpha, WARP_HIGHLIGHT, false);
 }
 
 vec4 GetPatchBackfill(vec2 uv, float gen) {
@@ -155,7 +160,7 @@ vec4 GetPatchBackfill(vec2 uv, float gen) {
     float th = (dot(uv, vec2(3.5, -3.5)) + gen + fract(iTime * 0.3)) * 6.28;
     uv += vec2(cos(th), sin(th)) * 0.02;
 
-    return GetBackfill(uv, 1.0 - pow(0.7, gen + 1.0), PATCH_HIGHLIGHT);
+    return GetBackfill(uv, 1.0 - pow(0.7, gen + 1.0), PATCH_HIGHLIGHT, true);
 }
 
 void main(void)
