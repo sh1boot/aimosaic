@@ -124,7 +124,8 @@ def area_of_interest(src):
   return greyblur
 
 
-def outpaint(src, patch=None, cutout_radius=24, gradient_radius=64, extra_noise=0.03, roi_pinch=(0.3,0.5)):
+def outpaint(src, patch=None, cutout_radius=24, gradient_radius=64,
+             extra_noise=0.03, roi_pinch=(0.3,0.5)):
   aoi = area_of_interest(src)
   alpha = src.getchannel("A").convert(mode="L")
   alpha1 = alpha.filter(ImageFilter.GaussianBlur(gradient_radius))

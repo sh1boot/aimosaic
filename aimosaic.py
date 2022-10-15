@@ -3,8 +3,10 @@ import argparse
 import datetime
 import os
 import pathlib
-import pydantic
 import random
+from string import Template
+
+import pydantic
 import replicate
 from PIL import Image
 import imagestuff
@@ -29,6 +31,8 @@ def mkfilename(suffix):
   return pathlib.Path(f'outpaint_{_STAMP}_{suffix}.png')
 
 def add_image(image, position=None):
+  global _PATCH
+  if _PATCH is None: _PATCH = image
   if position is None:
     ofs_range = Size(_CANVAS.size) - Size(image.size) + Size(1)
     position = Point.xymap(random.randrange, ofs_range)
@@ -107,7 +111,6 @@ def predict(prompt, start=None, alpha=None):
 
 
 def update_canvas(position, prompt):
-  global _PATCH
   original = get_image(position)
   start = original
 
@@ -128,18 +131,17 @@ def update_canvas(position, prompt):
   else:
     images = predict(prompt, start, alpha)
     result = images[0]
-  if _PATCH is None: _PATCH = result
   add_image(result, position)
 
 
 def outpaint(start_image, prompt_gen, coord_gen,
-             save_progress=False, prefix=None, suffix=None):
+             save_progress=False, prompt_format=None):
+  if prompt_format is None: prompt_format = Template('$line')
   if start_image: add_image(start_image, next(coord_gen))
   for position in coord_gen:
     imagestuff.reset_log()
     while True:
-      varying_prompt = next(prompt_gen)
-      prompt = " ".join([p for p in [prefix, varying_prompt, suffix] if p])
+      prompt = prompt_format.substitute(prompt_gen)
       print(f'{position} prompt: {prompt}')
       try:
         update_canvas(position, prompt)
@@ -190,17 +192,7 @@ def spiral_coords(area, step, swatch):
     yield from result(-r, -r)
 
 
-def slow_iter(source, rate):
-  for output in iter(source):
-    yield output
-    while random.randrange(rate) > 0:
-      yield output
-
-
 def main(opt):
-  prompts = opt.prompts.readlines()
-  prompts = [ prompt.strip() for prompt in prompts ]
-  random.shuffle(prompts)
   start_image = None
   if opt.start_image:
     if opt.start_image.startswith('http'):
@@ -209,14 +201,60 @@ def main(opt):
       start_image = Image.open(opt.start_image)
   outpaint(
       start_image,
-      prompt_gen=slow_iter(prompts, opt.prompt_change_rate),
+      prompt_gen=PromptBucket(opt.prompt_file, shuffle=opt.shuffle),
       #coord_gen=random_coords(opt.canvas, opt.step, opt.swatch),
       coord_gen=spiral_coords(opt.canvas, opt.step, opt.swatch),
-      prefix=opt.prompt_prefix,
-      suffix=opt.prompt_suffix,
+      prompt_format=opt.prompt,
       save_progress=(opt.save_progress and not opt.nop)
   )
-  _CANVAS.show()
+  if opt.show: _CANVAS.show()
+
+
+class PromptBucket(dict):
+  def __init__(self, fileobject, shuffle=False):
+    super().__init__()
+    if fileobject:
+      self.prompts = [ prompt.strip() for prompt in fileobject.readlines() ]
+    else:
+      self.prompts = [
+          'amusing kittens',
+          'amusing puppies',
+          'amusing goats',
+          'terrifying tentacles'
+      ]
+    def next_line():
+      while True:
+        if shuffle: random.shuffle(self.prompts)
+        yield from self.prompts
+    self.next_line = next_line()
+    def next_word():
+      while True:
+        try:
+          results = next(self.next_line)
+          yield from results.split()
+        except StopIteration:
+          return
+    self.next_word = next_word()
+    self._blank = ''
+
+  def __getitem__(self, key):
+    if key == 'line':
+      result = next(self.next_line)
+      self['____line'] = super().get('___line', self._blank)
+      self['___line'] = super().get('__line', self._blank)
+      self['__line'] = super().get('_line', self._blank)
+      self['_line'] = result
+      return result
+    if key == 'word':
+      result = next(self.next_word)
+      self['______word'] = super().get('_____word', self._blank)
+      self['_____word'] = super().get('____word', self._blank)
+      self['____word'] = super().get('___word', self._blank)
+      self['___word'] = super().get('__word', self._blank)
+      self['__word'] = super().get('_word', self._blank)
+      self['_word'] = result
+      return result
+    return super().get(key, self.blank)
 
 
 def xy_pair(arg):
@@ -240,12 +278,11 @@ if __name__ == '__main__':
   parser.add_argument('--step', type=wh_pair, default=Size(288,288))
   parser.add_argument('--swatch', type=wh_pair, default=_SWATCH)
   parser.add_argument('--start_image', type=str, default=None)
-  parser.add_argument('--prompts',
+  parser.add_argument('--prompt', type=Template, default=None)
+  parser.add_argument('--prompt_file',
                       type=argparse.FileType('r', encoding='utf-8'),
-                      default='prompts.txt')
-  parser.add_argument('--prompt_prefix', type=str, default=None)
-  parser.add_argument('--prompt_suffix', type=str, default=None)
-  parser.add_argument('--prompt_change_rate', type=int, default=1)
+                      default=None)
+  parser.add_argument('--shuffle', action='store_true', default=False)
 
   parser.add_argument('--prompt_strength', type=float, default=_PROMPT_STRENGTH)
   parser.add_argument('--guidance_scale', type=float, default=_GUIDANCE_SCALE)
@@ -253,6 +290,7 @@ if __name__ == '__main__':
 
   parser.add_argument('--noise', type=float, default=_NOISE)
   parser.add_argument('--nop', action='store_true', default=_NOP)
+  parser.add_argument('--show', action='store_true', default=False)
   parser.add_argument('--save_progress', action='store_true', default=False)
   _opt = parser.parse_args()
 
