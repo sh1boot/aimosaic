@@ -1,3 +1,6 @@
+'''
+  Image processing helper utilities.
+'''
 import io
 import math
 import random
@@ -29,6 +32,7 @@ class Point(tuple):
         function(*(a.y if isinstance(a, cls) else a for a in args))
     )
 
+  # pylint: disable=multiple-statements
   def _op(self, b, f): return type(self).xymap(f, self, type(self)(b))
   def __add__(self, b): return self._op(b, lambda x, y: x + y)
   def __sub__(self, b): return self._op(b, lambda x, y: x - y)
@@ -49,9 +53,11 @@ class Point(tuple):
 
 class Size(Point):
   @property
-  def width(self): return self[0]
+  def width(self):
+    return self[0]
   @property
-  def height(self): return self[1]
+  def height(self):
+    return self[1]
 
 _DEBUG_LOG = []
 

@@ -1,3 +1,6 @@
+'''
+  A quick wrapper for GLSL to process an image through the fragment shader.
+'''
 import moderngl
 import numpy as np
 from PIL import Image
