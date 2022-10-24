@@ -117,10 +117,13 @@ def predict(prompt, start=None, alpha=None):
 def update_canvas(position, prompt):
   original = get_image(position)
   start = original
+  alpha_range = start.getextrema()[3]
+  if alpha_range[0] == 255:
+    print(f'image at {position} is all opaque')
+    return
 
-  # fully-transparent gives entropy=2.0?
-  entropy = start.convert('L').entropy()
-  if entropy < 0.05:
+  if alpha_range[1] < 255:
+    print(f'image at {position} has no opaque pixels')
     start = None
     alpha = None
   else:
@@ -137,8 +140,7 @@ def update_canvas(position, prompt):
   add_image(result, position)
 
 
-def outpaint(start_image, prompt_gen, coord_gen, save_progress=False):
-  if start_image: add_image(start_image, next(coord_gen))
+def outpaint(prompt_gen, coord_gen, save_progress=False):
   for position in coord_gen:
     imagestuff.reset_log()
     while True:
@@ -195,20 +197,35 @@ def spiral_coords(area, step, swatch):
 
 
 def main(opt):
-  start_image = None
   if opt.start_image:
     if opt.start_image.startswith('http'):
       start_image = imagestuff.download(opt.start_image)
     else:
       start_image = Image.open(opt.start_image)
-  outpaint(
-      start_image,
-      prompt_gen=PromptGen(opt.prompt, opt.prompt_file),
-      #coord_gen=random_coords(opt.canvas, opt.step, opt.swatch),
-      coord_gen=spiral_coords(opt.canvas, opt.step, opt.swatch),
-      save_progress=(opt.save_progress and not opt.nop)
-  )
-  if opt.show: _CANVAS.show()
+    add_image(start_image)
+
+  resize_size = Size(_CANVAS.size) - (_SWATCH - opt.step) * 2
+  resize_ratio = resize_size / Size(_CANVAS.size)
+  resize_size = Size(_CANVAS.size) * max(*resize_ratio)
+  resize_size = Size.xymap(int, resize_size)
+
+  resize_steps = opt.resize_steps
+  prompt_gen=PromptGen(opt.prompt, opt.prompt_file)
+  global _STAMP
+  old_stamp = _STAMP
+  for step in range(resize_steps + 1):
+    if resize_steps > 0:
+      _STAMP = f'{old_stamp}_s{step:03d}'
+    outpaint(
+        prompt_gen=prompt_gen,
+        #coord_gen=random_coords(opt.canvas, opt.step, opt.swatch),
+        coord_gen=spiral_coords(opt.canvas, opt.step, opt.swatch),
+        save_progress=(opt.save_progress and not opt.nop)
+    )
+    if opt.show: _CANVAS.show()
+    resized = _CANVAS.resize(resize_size)
+    _CANVAS.paste(0, (0, 0, *_CANVAS.size))
+    add_image(resized)
 
 
 class BackrefGen:
@@ -343,6 +360,7 @@ if __name__ == '__main__':
   parser.add_argument('--step', type=wh_pair, default=Size(288,288))
   parser.add_argument('--swatch', type=wh_pair, default=_SWATCH)
   parser.add_argument('--start_image', type=str, default=None)
+  parser.add_argument('--resize_steps', type=int, default=0)
   parser.add_argument('--prompt', nargs='*', type=string.Template, default=None)
   parser.add_argument('--prompt_file', nargs='*',
                       type=PromptGen.prompt_arg, default=None)
